@@ -68,74 +68,9 @@ router = Router()
 dp.include_router(router)
 
 
-# 🔹 Создание базы данных
-async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """CREATE TABLE IF NOT EXISTS activity (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            username TEXT,
-            channel_id INTEGER,
-            point TEXT,
-            message TEXT,
-            timestamp TEXT
-        )"""
-        )
 
-        await db.execute(
-            """CREATE TABLE IF NOT EXISTS user_links (
-            discord_id INTEGER PRIMARY KEY,
-            telegram_id INTEGER UNIQUE
-        )"""
-        )
 
-        await db.execute(
-            """CREATE TABLE IF NOT EXISTS user_checkpoints (
-            user_id INTEGER,
-            point TEXT,
-            UNIQUE(user_id, point)
-        )"""
-        )
 
-        await db.execute(
-            """CREATE TABLE IF NOT EXISTS user_status (
-            user_id INTEGER PRIMARY KEY,
-            last_point TEXT,
-            last_activity TIMESTAMP
-        )"""
-        )
-
-        await db.execute(
-        """CREATE TABLE IF NOT EXISTS warnings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            reason TEXT,
-            timestamp TEXT
-        )"""
-    )
-        await db.execute(
-            """CREATE TABLE IF NOT EXISTS blocked_users (
-                user_id INTEGER PRIMARY KEY,
-                blocked INTEGER DEFAULT 0
-            )"""
-        )
-
-        await db.execute(
-            """CREATE TABLE IF NOT EXISTS muted_users (
-                user_id INTEGER PRIMARY KEY,
-                muted_until TEXT
-            )"""
-        )
-
-        await db.execute(
-            """CREATE TABLE IF NOT EXISTS banned_users (
-                user_id INTEGER PRIMARY KEY
-            )"""
-        )
-
-        await db.commit()
-        print("✅ База данных инициализирована успешно!")
 
 
 
@@ -188,6 +123,9 @@ async def start_cmd(message: types.Message):
                 types.InlineKeyboardButton(
                     text="🏆 Топ пользователи", callback_data="cmd_top_users"
                 ),
+                types.InlineKeyboardButton(
+                    text="🔗Привязать DS по нику", callback_data="cmd_link_discord"
+                ),
             ],
         ]
     )
@@ -205,7 +143,36 @@ async def start_cmd(message: types.Message):
         reply_markup=persistent_keyboard
     )
 
-    
+@router.callback_query(F.data == "cmd_link_discord")
+async def ask_for_discord_nickname(callback_query: types.CallbackQuery, state: FSMContext):
+    await callback_query.message.answer("📝 Введите ваш ник в Discord:")
+    await state.set_state("waiting_for_discord_nickname")  # Устанавливаем состояние ожидания ввода
+    await callback_query.answer()
+
+@router.message(StateFilter("waiting_for_discord_nickname"))
+async def link_discord_username(message: types.Message, state: FSMContext):
+    discord_username = message.text.strip()  # Получаем введённый никнейм
+    telegram_id = message.from_user.id  # Получаем Telegram ID пользователя
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO user_links (discord_username, telegram_id) 
+               VALUES (?, ?)
+               ON CONFLICT(discord_username) 
+               DO UPDATE SET telegram_id = ?""",  # Обновляем telegram_id в случае конфликта
+            (discord_username, telegram_id, telegram_id)
+        )
+        await db.commit()
+
+    await message.answer(f"✅ Ваш Telegram привязан к Discord нику `{discord_username}`.")
+    await state.clear()  # Сбрасываем состояние
+
+
+
+
+
+
+
 
 
 # 📌 Обработчик нажатий на кнопки → выполнение команд
@@ -218,6 +185,7 @@ async def process_callback(callback_query: types.CallbackQuery):
         "cmd_monthly": "/monthly",
         "cmd_discord": "/discord",
         "cmd_top_users": "/top_users",
+        "cmd_link_discord": "/link_dicsord",
     }
 
     command = commands_map.get(callback_query.data)
@@ -317,28 +285,8 @@ async def start(ctx):
     await ctx.send(commands_list)
 
 
-# ✅ **Привязка Telegram к Discord**
-@dp.message(Command("link_discord"))
-async def link_discord_cmd(message: Message):
-    args = message.text.split()
-    if len(args) != 2:
-        await message.answer("❌ Использование: /link_discord [твой Discord ID]")
-        return
 
-    discord_id = int(args[1])
-    telegram_id = message.from_user.id
 
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO user_links (discord_id, telegram_id) VALUES (?, ?) "
-            "ON CONFLICT(discord_id) DO UPDATE SET telegram_id = ?",
-            (discord_id, telegram_id, telegram_id),
-        )
-        await db.commit()
-
-    await message.answer(
-        f"✅ Твой Telegram теперь привязан к Discord ID `{discord_id}`."
-    )
 
 
 # ✅ **Проверка привязки**
@@ -1113,6 +1061,88 @@ async def test_reminder(ctx):
 
 
 ##############################################################################################################################
+async def init_db():
+    # Подключение к базе данных SQLite
+    async with aiosqlite.connect(DB_PATH) as db:
+
+        await db.execute("DROP TABLE IF EXISTS user_links;")
+        await db.commit()
+
+        
+        # Создание таблицы activity, если она не существует
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                username TEXT,
+                channel_id INTEGER,
+                point TEXT,
+                message TEXT,
+                timestamp TEXT
+            )"""
+        )
+
+        # Создание таблицы user_links
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS user_links (
+            discord_username TEXT PRIMARY KEY,
+            telegram_id INTEGER UNIQUE
+        )"""
+        )
+        # Создание таблицы user_checkpoints
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS user_checkpoints (
+                user_id INTEGER,
+                point TEXT,
+                UNIQUE(user_id, point)
+            )"""
+        )
+
+        # Создание таблицы user_status
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS user_status (
+                user_id INTEGER PRIMARY KEY,
+                last_point TEXT,
+                last_activity TIMESTAMP
+            )"""
+        )
+
+        # Создание таблицы warnings
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS warnings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                reason TEXT,
+                timestamp TEXT
+            )"""
+        )
+
+        # Создание таблицы blocked_users
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS blocked_users (
+                user_id INTEGER PRIMARY KEY,
+                blocked INTEGER DEFAULT 0
+            )"""
+        )
+
+        # Создание таблицы muted_users
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS muted_users (
+                user_id INTEGER PRIMARY KEY,
+                muted_until TEXT
+            )"""
+        )
+
+        # Создание таблицы banned_users
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS banned_users (
+                user_id INTEGER PRIMARY KEY
+            )"""
+        )
+
+        # Сохраняем изменения в базе данных
+        await db.commit()
+        print("✅ База данных инициализирована успешно!")
 
 
 # 🔥 **Запуск ботов**
